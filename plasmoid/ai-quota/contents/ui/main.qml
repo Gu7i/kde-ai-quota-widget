@@ -53,7 +53,7 @@ PlasmoidItem {
             height: width
             source: Qt.resolvedUrl("../icons/ai-neural.svg")
             isMask: true
-            color: "white"
+            color: Kirigami.Theme.textColor
             opacity: root.daemonOk ? 1 : 0.4
         }
         MouseArea {
