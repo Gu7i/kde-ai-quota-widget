@@ -16,6 +16,7 @@ Token handling is intentionally defensive:
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -123,14 +124,29 @@ class ClaudeProvider:
                 },
             }
             return self._last
+        except urllib.error.HTTPError as e:
+            # 429 (rate limit) and 5xx are transient: the usage endpoint throttles
+            # or hiccups briefly. If we already have good numbers, keep showing them
+            # as valid so the panel doesn't flap to "offline" — the next poll recovers.
+            if e.code == 429 or e.code >= 500:
+                if self._last:
+                    print(f"[claude] transient HTTP {e.code}, keeping last snapshot",
+                          flush=True)
+                    return self._last
+                return self._err(f"HTTP {e.code} (reintentando)")
+            # 401/403 etc. are real auth failures — surface them.
+            return self._degrade(f"HTTP {e.code}")
         except Exception as e:
-            # Keep showing the last good numbers, just flag the error.
-            if self._last:
-                stale = dict(self._last)
-                stale["ok"] = False
-                stale["error"] = str(e)
-                return stale
-            return self._err(str(e))
+            return self._degrade(str(e))
+
+    def _degrade(self, msg: str) -> dict:
+        """Mark offline but keep the last good numbers visible if we have any."""
+        if self._last:
+            stale = dict(self._last)
+            stale["ok"] = False
+            stale["error"] = msg
+            return stale
+        return self._err(msg)
 
     def _err(self, msg: str) -> dict:
         return {"id": self.id, "label": self.label, "ok": False,
