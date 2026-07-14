@@ -1,0 +1,16 @@
+{
+    "KPlugin": {
+        "Id": "org.kde.ai-quota",
+        "Name": "AI Quota",
+        "Name[es]": "Cuota IA",
+        "Description": "Track AI subscription quotas and manage Ollama models",
+        "Description[es]": "Cuotas de suscripciones de IA y modelos de Ollama",
+        "Icon": "speedometer",
+        "Category": "System Information",
+        "Version": "1.0.0",
+        "License": "GPL-2.0-or-later",
+        "Authors": [{"Name": "guti"}]
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-StandAloneApp": false
+}
