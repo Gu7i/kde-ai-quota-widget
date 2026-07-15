@@ -66,13 +66,20 @@ class ClaudeProvider:
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.load(r)
 
-    def _access_token(self) -> tuple[str, dict]:
-        """Return a (hopefully valid) access token plus the oauth block."""
+    def _access_token(self, force_refresh: bool = False) -> tuple[str, dict]:
+        """Return a (hopefully valid) access token plus the oauth block.
+
+        Normally we only refresh when the cached ``expiresAt`` says the token
+        has expired. ``force_refresh`` bypasses that check: the caller uses it
+        after a live 401, where the server has rejected a token our clock still
+        believes is valid (server-side revocation, a rotation by Claude Code
+        that invalidated our copy, or clock skew).
+        """
         data = self._load_creds()
         oauth = data.get("claudeAiOauth", {})
         expires = oauth.get("expiresAt", 0) or 0
         # 60s of slack so we don't race a just-expiring token.
-        if expires > (time.time() + 60) * 1000:
+        if not force_refresh and expires > (time.time() + 60) * 1000:
             return oauth.get("accessToken", ""), oauth
 
         rt = oauth.get("refreshToken")
@@ -90,18 +97,32 @@ class ClaudeProvider:
         return oauth.get("accessToken", ""), oauth
 
     # ── snapshot ─────────────────────────────────────────────────────────────
+    def _fetch_usage(self, force_refresh: bool = False) -> tuple[dict, dict]:
+        """Hit the usage endpoint once, returning (usage, oauth)."""
+        token, oauth = self._access_token(force_refresh=force_refresh)
+        req = urllib.request.Request(USAGE_URL, headers={
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "anthropic-version": "2023-06-01",
+        })
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r), oauth
+
     def snapshot(self) -> dict:
         if not CREDS_FILE.exists():
             return self._err("no autenticado (ejecuta Claude Code una vez)")
         try:
-            token, oauth = self._access_token()
-            req = urllib.request.Request(USAGE_URL, headers={
-                "Authorization": f"Bearer {token}",
-                "anthropic-beta": "oauth-2025-04-20",
-                "anthropic-version": "2023-06-01",
-            })
-            with urllib.request.urlopen(req, timeout=15) as r:
-                usage = json.load(r)
+            try:
+                usage, oauth = self._fetch_usage()
+            except urllib.error.HTTPError as e:
+                # A 401 means the server rejected a token our clock thought was
+                # valid. Force a refresh and retry once before giving up.
+                if e.code == 401:
+                    print("[claude] 401, forcing token refresh and retrying",
+                          flush=True)
+                    usage, oauth = self._fetch_usage(force_refresh=True)
+                else:
+                    raise
 
             windows = []
             for key, label in WINDOW_LABELS:
