@@ -1,9 +1,12 @@
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
 
-// One Ollama model: name + specs on the left, a "preferred" star, a resident
-// badge and a load/unload button on the right.
+// One Ollama model. A boxed grid of bordered cards made five models look like
+// five competing objects, so the row is now a list item: hairline separators,
+// and the preferred model marked by an accent stripe you can actually see
+// instead of an 18%-opacity tint.
 Rectangle {
     id: row
 
@@ -15,94 +18,115 @@ Rectangle {
     property bool   preferred: false
     property bool   busy: false
 
-    property color colBg:   "#201F1D"     // popup background (text on fills)
-    property color colText: "#C1AB85"     // sand — primary text
-    property color colLine: "#3E6868"     // teal — borders
-    property color colFill: "#C1AB85"     // sand — resident badge / active
+    property color colText: "#E8DFCB"
+    property color colDim:  "#9A917D"
+    property color colSand: "#C1AB85"
+    property color colLine: "#3A362E"
+    property color colHover: "#282622"
+    property color colAccent: "#6FA6A0"
 
     signal loadRequested(string name)
     signal unloadRequested(string name)
     signal preferRequested(string name)
 
+    readonly property int fsMicro: Math.round(Kirigami.Units.gridUnit * 0.5)
+    readonly property int fsSmall: Math.round(Kirigami.Units.gridUnit * 0.58)
+    readonly property int fsBase:  Math.round(Kirigami.Units.gridUnit * 0.66)
+
     Layout.fillWidth: true
-    implicitHeight: 42
-    color: preferred ? Qt.rgba(0.24, 0.41, 0.41, 0.18) : "transparent"
-    border.color: colLine
-    border.width: 1
+    implicitHeight: Math.round(Kirigami.Units.gridUnit * 2.4)
+    color: preferred ? Qt.rgba(colSand.r, colSand.g, colSand.b, 0.08) : "transparent"
 
     function sizeGb() {
         if (!sizeBytes) return ""
         return (sizeBytes / 1e9).toFixed(1) + " GB"
     }
 
+    // Preferred stripe
+    Rectangle {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: 2
+        color: row.preferred ? row.colSand : "transparent"
+    }
+
+    // Separator
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 1
+        color: row.colLine
+    }
+
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: 8
-        anchors.rightMargin: 6
-        spacing: 8
+        anchors.leftMargin: Kirigami.Units.smallSpacing * 2
+        anchors.rightMargin: Kirigami.Units.smallSpacing
+        spacing: Kirigami.Units.smallSpacing * 2
 
-        // Preferred star
         Text {
             text: row.preferred ? "★" : "☆"
-            font.pixelSize: 16
-            color: row.colText
-            opacity: row.preferred ? 1 : 0.4
+            font.pixelSize: row.fsBase
+            color: row.preferred ? row.colSand : row.colDim
             MouseArea {
                 anchors.fill: parent
-                anchors.margins: -4
+                anchors.margins: -Kirigami.Units.smallSpacing
                 cursorShape: Qt.PointingHandCursor
+                hoverEnabled: true
                 onClicked: row.preferRequested(row.name)
                 QQC2.ToolTip.text: "Marcar como preferido"
                 QQC2.ToolTip.visible: containsMouse
-                hoverEnabled: true
             }
         }
 
-        Column {
+        ColumnLayout {
             Layout.fillWidth: true
             spacing: 1
             Text {
+                Layout.fillWidth: true
                 text: row.name
                 font.family: "monospace"
-                font.pixelSize: 12
+                font.pixelSize: row.fsSmall
                 font.bold: true
                 color: row.colText
                 elide: Text.ElideRight
-                width: parent.width
             }
             Text {
-                text: [row.paramSize, row.quant, row.sizeGb()].filter(function (x) { return x }).join("  ·  ")
+                text: [row.paramSize, row.quant, row.sizeGb()]
+                      .filter(function (x) { return x }).join(" · ")
                 font.family: "monospace"
-                font.pixelSize: 8
-                color: row.colText
-                opacity: 0.55
+                font.pixelSize: row.fsMicro
+                color: row.colDim
             }
         }
 
-        // Resident badge
+        // Resident badge — outlined, so it reads as a state and not as a button.
         Rectangle {
             visible: row.loaded
-            width: residentTxt.width + 10
-            height: 16
-            color: row.colFill
+            implicitWidth: residentTxt.implicitWidth + Kirigami.Units.smallSpacing * 2.5
+            implicitHeight: Math.round(Kirigami.Units.gridUnit * 0.85)
+            color: "transparent"
+            border.color: row.colAccent
+            border.width: 1
             Text {
                 id: residentTxt
                 anchors.centerIn: parent
                 text: "EN RAM"
                 font.family: "monospace"
-                font.pixelSize: 8
+                font.pixelSize: row.fsMicro
                 font.bold: true
                 font.letterSpacing: 1
-                color: row.colBg
+                color: row.colAccent
             }
         }
 
-        // Load / unload button
         Rectangle {
-            width: 68
-            height: 22
-            color: row.loaded ? row.colLine : "transparent"
-            border.color: row.colLine
+            implicitWidth: Math.round(Kirigami.Units.gridUnit * 3.9)
+            implicitHeight: Math.round(Kirigami.Units.gridUnit * 1.25)
+            color: actArea.containsMouse && !row.busy ? row.colHover : "transparent"
+            border.color: row.loaded || actArea.containsMouse ? row.colSand : row.colLine
             border.width: 1
             opacity: row.busy ? 0.5 : 1
 
@@ -110,15 +134,17 @@ Rectangle {
                 anchors.centerIn: parent
                 text: row.busy ? "···" : (row.loaded ? "LIBERAR" : "CARGAR")
                 font.family: "monospace"
-                font.pixelSize: 9
+                font.pixelSize: row.fsMicro
                 font.bold: true
                 font.letterSpacing: 1
-                color: row.colText
+                color: row.loaded ? row.colSand : row.colDim
             }
 
             MouseArea {
+                id: actArea
                 anchors.fill: parent
                 enabled: !row.busy
+                hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
                 onClicked: row.loaded ? row.unloadRequested(row.name)
                                       : row.loadRequested(row.name)

@@ -27,11 +27,14 @@ TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 # Windows we surface, in display order. Keys not present / null are skipped.
+# The third element is the window length in seconds: the API only tells us when
+# a window resets, and the widget needs the span to work out how much of it has
+# already been spent (used for the "at this pace" projection).
 WINDOW_LABELS = [
-    ("five_hour", "5 horas"),
-    ("seven_day", "7 días"),
-    ("seven_day_opus", "7d · Opus"),
-    ("seven_day_sonnet", "7d · Sonnet"),
+    ("five_hour", "5 horas", 5 * 3600),
+    ("seven_day", "7 días", 7 * 86400),
+    ("seven_day_opus", "7d · Opus", 7 * 86400),
+    ("seven_day_sonnet", "7d · Sonnet", 7 * 86400),
 ]
 
 
@@ -125,13 +128,14 @@ class ClaudeProvider:
                     raise
 
             windows = []
-            for key, label in WINDOW_LABELS:
+            for key, label, span in WINDOW_LABELS:
                 w = usage.get(key)
                 if w and w.get("utilization") is not None:
                     windows.append({
                         "label": label,
                         "utilization": round(float(w["utilization"]), 1),
                         "resets_at": w.get("resets_at"),
+                        "window_seconds": span,
                     })
 
             extra = usage.get("extra_usage") or {}

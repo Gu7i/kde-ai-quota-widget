@@ -8,13 +8,17 @@ See your AI subscription quotas and manage your local Ollama models from the KDE
 
 ## Features
 
-- **AI neural-network panel icon** tinted by your Claude 5-hour utilization at a glance (teal → sand → red); dimmed red when the daemon is offline
-- **Tabs** separating providers, one per AI plus an Ollama tab
+- **AI neural-network panel icon** in the plain theme color, so it sits in the icon row like every other tray icon — with a small amber/red badge once your 5-hour window crosses 70% / 90%; dimmed when the daemon is offline
+- **Tabs** separating providers, one per AI plus an Ollama tab, each with a health dot
 - **Claude tab — live quota** (the same numbers `/usage` shows inside Claude Code):
-  - **5-hour** and **7-day** rolling windows as labelled progress bars with utilization %
-  - "reinicia en Xh Ym" reset hint per window
+  - The **first window is a hero readout** — the number you opened the widget for, not one row among many
+  - Bars carry **70 / 90 threshold marks**, the same cut-offs that drive the color (teal → amber → red)
+  - "reinicia en Xh Ym" reset hint plus an **"a este ritmo llegas al X%"** projection per window
   - Opus / Sonnet 7-day windows shown when the API reports them
-  - Plan (`PRO`) and rate-limit tier in the header/footer
+  - Plan (`PRO`) and rate-limit tier as chips
+- **Follows your Plasma theme** — the vintage palette ships in a light and a dark variant, picked from `Kirigami.Theme`, and every size derives from `Kirigami.Units` so it scales on HiDPI
+- **Status bar** showing how stale the numbers are (`actualizado hace 6 s`) and whether the daemon is answering
+- **Actualizar forces a real re-query** (`POST /refresh`) instead of re-reading the daemon's cache, and spins while it is in flight
 - **Ollama tab — local models**:
   - Lists installed models with params, quantization and size on disk
   - **CARGAR / LIBERAR** button loads a model into RAM/VRAM (`keep_alive`) or evicts it — with an **EN RAM** badge for resident models
@@ -132,8 +136,8 @@ Example `/providers` response:
     "label": "Claude",
     "ok": true,
     "windows": [
-      {"label": "5 horas", "utilization": 67.0, "resets_at": "2026-07-14T06:29:59+00:00"},
-      {"label": "7 días",  "utilization": 26.0, "resets_at": "2026-07-16T04:59:59+00:00"}
+      {"label": "5 horas", "utilization": 67.0, "resets_at": "2026-07-14T06:29:59+00:00", "window_seconds": 18000},
+      {"label": "7 días",  "utilization": 26.0, "resets_at": "2026-07-16T04:59:59+00:00", "window_seconds": 604800}
     ],
     "meta": {"plan": "pro", "tier": "default_claude_ai", "extra_usage": false}
   }
@@ -174,10 +178,16 @@ The daemon discovers quota providers in `daemon/ai_quota_service.py → build_pr
    ```python
    {
        "id": "codex", "label": "Codex", "ok": True, "error": None,
-       "windows": [{"label": "5 horas", "utilization": 40.0, "resets_at": "..."}],
+       "windows": [{"label": "5 horas", "utilization": 40.0, "resets_at": "...",
+                    "window_seconds": 18000}],
        "meta": {"plan": "plus"},
    }
    ```
+
+   `window_seconds` (the length of the window) is optional: the API only says
+   *when* a window resets, so the widget needs the span to work out how much of
+   it is already spent. Omit it and the "at this pace" projection is simply
+   hidden for that window; everything else still renders.
 
 2. Register it in `build_providers()`:
 
@@ -213,8 +223,9 @@ daemon/
     ollama_provider.py         /api/tags, /api/ps, load/unload, preferred
 plasmoid/ai-quota/
   contents/ui/
-    main.qml                   Plasmoid root: polling, tabs, panel icon
-    QuotaBar.qml               A single utilization window (labelled bar)
+    main.qml                   Plasmoid root: palette, polling, tabs, panel icon
+    QuotaBar.qml               One utilization window — hero or compact row
+    Gauge.qml                  Utilization track with the 70 / 90 threshold marks
     ModelRow.qml               One Ollama model row (load/unload/prefer)
   metadata.json                Plasma plugin descriptor
 install.sh                     One-shot installer
@@ -223,7 +234,11 @@ uninstall.sh                   Clean removal
 
 ## Design
 
-A sibling of [kde-ewelink-widget](https://github.com/Gu7i/kde-ewelink-widget): same industrial monospace chrome (filled tabs, status dot, `LLM CORP™` footer), in an American-vintage **dark** palette — charcoal background `#201F1D`, sand text `#C1AB85`, teal accent `#3E6868`, red `#C94E44`. Utilization bars shift teal → sand (≥70%) → red (≥90%). The panel icon is a neural-network glyph recolored by the same scale.
+A sibling of [kde-ewelink-widget](https://github.com/Gu7i/kde-ewelink-widget): the same industrial monospace chrome and `LLM CORP™` mark, in an American-vintage palette — charcoal `#201F1D` / sand `#C1AB85` / teal / rust on dark, parchment `#F6F2E8` / `#6B5B41` on light. The variant is chosen from `Kirigami.Theme.backgroundColor`, so the popup no longer sits as a black slab in a light desktop.
+
+Layout follows one rule: **the number you opened the widget for is the largest thing in the window.** The first quota window is a hero readout; the rest are compact rows under it. Bars shift teal → amber (≥70%) → rust (≥90%) and carry marks at those two thresholds, so a bar says how close you are without you having to remember where the line is — amber is its own hue rather than the body sand, which made "warning" and "label" identical. Chrome is demoted throughout: tabs are underlined rather than filled, and the footer trades decoration for the freshness of the data.
+
+Every dimension derives from `Kirigami.Units.gridUnit`, which tracks the desktop's font metrics — there are no hardcoded pixel sizes left to break on HiDPI.
 
 ## License
 
