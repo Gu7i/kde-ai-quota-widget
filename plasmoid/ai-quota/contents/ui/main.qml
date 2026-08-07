@@ -612,9 +612,10 @@ PlasmoidItem {
     /* Force a real re-query instead of re-reading the daemon's cache.
      *
      * GET /providers only returns the last snapshot, which the daemon refreshes
-     * on its own 60s loop — so refreshing with a GET can hand back numbers up to
-     * a minute old and look like the button does nothing. POST /refresh makes
-     * the daemon hit the provider APIs now and answer with the fresh snapshot.
+     * on its own 180s loop — so refreshing with a GET can hand back numbers
+     * minutes old and look like the button does nothing. POST /refresh makes
+     * the daemon hit the provider APIs now (skipping its rate-limit backoff)
+     * and answer with the fresh snapshot.
      */
     function forceRefresh() {
         if (root.refreshing) return

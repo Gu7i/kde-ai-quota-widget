@@ -26,7 +26,13 @@ from providers.ollama_provider import OllamaProvider    # noqa: E402
 
 CONFIG_FILE = Path.home() / ".config" / "ai-quota-widget" / "config.json"
 PORT = 7183
-POLL_INTERVAL = 60  # seconds between quota refreshes
+# Anthropic's usage endpoint allows roughly 30 requests/hour; at 60s we spent
+# half of every hour being 429'd. Quotas don't move fast enough to care.
+POLL_INTERVAL = 180  # seconds between quota refreshes
+# At boot we can easily start before the network is up (DNS not resolving yet).
+# Retry on this ramp until the first clean poll instead of showing an error for
+# a full interval.
+STARTUP_RETRIES = (5, 15, 30, 60)
 
 # ── config ──────────────────────────────────────────────────────────────────
 
@@ -68,12 +74,14 @@ def build_providers() -> None:
     _ollama = OllamaProvider(_config.get("ollama_url", DEFAULT_CONFIG["ollama_url"]), _config)
 
 
-def _refresh_snapshots() -> None:
+def _refresh_snapshots(force: bool = False) -> None:
+    """Re-poll every provider. ``force`` comes from the widget's Actualizar
+    button and lets a provider skip its own rate-limit backoff."""
     global _snapshots, _last_refresh
     snaps = []
     for p in _quota_providers:
         try:
-            snaps.append(p.snapshot())
+            snaps.append(p.snapshot(force=force))
         except Exception as e:
             snaps.append({"id": getattr(p, "id", "?"), "label": getattr(p, "label", "?"),
                           "ok": False, "error": str(e), "windows": [], "meta": {}})
@@ -82,10 +90,20 @@ def _refresh_snapshots() -> None:
         _last_refresh = time.time()
 
 
+def _all_ok() -> bool:
+    with _snap_lock:
+        return bool(_snapshots) and all(s.get("ok") for s in _snapshots)
+
+
 def _refresh_loop() -> None:
-    while True:
+    for delay in STARTUP_RETRIES:
         _refresh_snapshots()
+        if _all_ok():
+            break
+        time.sleep(delay)
+    while True:
         time.sleep(POLL_INTERVAL)
+        _refresh_snapshots()
 
 
 # ── HTTP handler ────────────────────────────────────────────────────────────
@@ -160,7 +178,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(e)})
 
         elif path == "/refresh":
-            _refresh_snapshots()
+            _refresh_snapshots(force=True)
             with _snap_lock:
                 self._send_json(200, list(_snapshots))
 
@@ -178,9 +196,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     build_providers()
+    # The first poll happens inside the loop (on the startup retry ramp) so a
+    # network that isn't up yet can't delay binding the port.
     print("Fetching initial quotas…", flush=True)
-    _refresh_snapshots()
-
     t = threading.Thread(target=_refresh_loop, daemon=True)
     t.start()
 

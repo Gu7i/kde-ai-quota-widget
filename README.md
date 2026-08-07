@@ -26,7 +26,8 @@ See your AI subscription quotas and manage your local Ollama models from the KDE
 - **Instant feedback** — actions respond immediately (optimistic UI); confirmed by the next poll
 - **Extensible provider architecture** — Codex, Gemini, etc. can be added by dropping one module in `daemon/providers/`
 - Daemon runs as a systemd user service (starts at boot)
-- Reads Claude's OAuth token from `~/.claude/.credentials.json` and refreshes it automatically when it expires (writing back atomically, and only on success — your credentials are never corrupted if a refresh fails)
+- Reads Claude's OAuth token from `~/.claude/.credentials.json` — read-only, never written, so it can't race Claude Code over single-use refresh tokens
+- Rate-limit aware: backs off when Anthropic's usage endpoint throttles, and retries fast at boot when the network isn't up yet
 
 ## Providers
 
@@ -105,7 +106,7 @@ cp -r plasmoid/ai-quota ~/.local/share/plasma/plasmoids/org.kde.ai-quota
 │  ai-quota-daemon│(Python)           │
 │  ┌──────────────┴───────────────┐   │
 │  │  ai_quota_service.py         │   │
-│  │  refreshes quotas every 60s  │   │
+│  │  refreshes quotas every 180s │   │
 │  │  providers/                  │   │
 │  │    claude_provider.py ───────┼───┼──▶ api.anthropic.com/api/oauth/usage
 │  │    ollama_provider.py ───────┼───┼──▶ localhost:11434 (Ollama)
@@ -151,7 +152,11 @@ The daemon reads the Claude Code OAuth token from `~/.claude/.credentials.json` 
 - `GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`, `anthropic-version: 2023-06-01`
 - Returns `five_hour` / `seven_day` (and `seven_day_opus` / `seven_day_sonnet` when applicable) with `utilization` (%) and `resets_at`
 
-**Token handling is defensive:** the file is read fresh on every poll (Claude Code keeps it refreshed whenever it runs). If the access token is expired the daemon refreshes it against `https://console.anthropic.com/v1/oauth/token` using Claude Code's public client id, and writes the rotated token back **atomically and only on success**. If a refresh ever fails, the file is left untouched and Claude simply shows as offline until the next refresh — nothing is corrupted.
+**Token handling is read-only.** The file is read fresh on every poll, and never written. Claude Code owns the token and keeps it refreshed whenever it runs; if the access token is expired the widget shows `token caducado (abre Claude Code)` and recovers by itself on the next poll after Claude Code rotates it.
+
+This is deliberate. An earlier version refreshed the token itself and wrote the rotated pair back. OAuth refresh tokens are single-use, so the daemon and Claude Code raced over the same file and whichever redeemed second was left holding a dead token — a 403 loop that only ended when the other process rewrote the credentials.
+
+**Rate limiting:** the usage endpoint allows roughly 30 requests/hour, so the poll loop runs at 180s. On a 429 or 5xx the provider backs off (120s, doubling to a 900s cap, reset on the first success) and keeps serving the last good numbers rather than flapping to offline. The **Actualizar** button skips the backoff — a human pressing a button is not what causes throttling.
 
 ## Ollama model management
 
@@ -216,10 +221,10 @@ curl -X POST http://127.0.0.1:7183/ollama/load \
 
 ```
 daemon/
-  ai_quota_service.py          HTTP daemon on :7183 + 60s quota refresh loop
+  ai_quota_service.py          HTTP daemon on :7183 + 180s quota refresh loop
   providers/
     __init__.py                Provider contract docs
-    claude_provider.py         Reads ~/.claude token, live usage, auto-refresh
+    claude_provider.py         Reads ~/.claude token (read-only), live usage, backoff
     ollama_provider.py         /api/tags, /api/ps, load/unload, preferred
 plasmoid/ai-quota/
   contents/ui/
