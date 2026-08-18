@@ -6,6 +6,7 @@ on localhost:7183.
 Endpoints:
   GET  /status                → daemon health
   GET  /providers             → quota snapshot for every configured provider
+  GET  /claude/status         → status.claude.com (indicator, components, incidents)
   GET  /ollama/models         → installed models + which are resident in memory
   POST /ollama/load           → load a model into memory  (body: {"name": "..."})
   POST /ollama/unload         → evict a model from memory  (body: {"name": "..."})
@@ -22,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from providers.claude_provider import ClaudeProvider   # noqa: E402
+from providers.claude_status_provider import ClaudeStatusProvider  # noqa: E402
 from providers.ollama_provider import OllamaProvider    # noqa: E402
 
 CONFIG_FILE = Path.home() / ".config" / "ai-quota-widget" / "config.json"
@@ -62,22 +64,25 @@ def save_config(cfg: dict) -> None:
 _config = load_config()
 _quota_providers: list = []
 _ollama: OllamaProvider | None = None
+_status: ClaudeStatusProvider | None = None
 _snapshots: list = []
+_status_snapshot: dict = {}
 _snap_lock = threading.Lock()
 _last_refresh: float = 0
 
 
 def build_providers() -> None:
     """Register the quota providers. Add Codex/Gemini here later."""
-    global _quota_providers, _ollama
+    global _quota_providers, _ollama, _status
     _quota_providers = [ClaudeProvider()]
+    _status = ClaudeStatusProvider()
     _ollama = OllamaProvider(_config.get("ollama_url", DEFAULT_CONFIG["ollama_url"]), _config)
 
 
 def _refresh_snapshots(force: bool = False) -> None:
     """Re-poll every provider. ``force`` comes from the widget's Actualizar
     button and lets a provider skip its own rate-limit backoff."""
-    global _snapshots, _last_refresh
+    global _snapshots, _status_snapshot, _last_refresh
     snaps = []
     for p in _quota_providers:
         try:
@@ -85,8 +90,18 @@ def _refresh_snapshots(force: bool = False) -> None:
         except Exception as e:
             snaps.append({"id": getattr(p, "id", "?"), "label": getattr(p, "label", "?"),
                           "ok": False, "error": str(e), "windows": [], "meta": {}})
+    # The status page is a separate, unauthenticated service: it must keep
+    # working when the quota poll is failing, since "is Claude down?" is
+    # exactly the question a failing quota poll raises.
+    try:
+        status = _status.snapshot(force=force)
+    except Exception as e:
+        status = {"ok": False, "error": str(e), "indicator": "unknown", "severity": 0,
+                  "description": "", "components": [], "incidents": [],
+                  "url": "https://status.claude.com"}
     with _snap_lock:
         _snapshots = snaps
+        _status_snapshot = status
         _last_refresh = time.time()
 
 
@@ -143,6 +158,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/providers":
             with _snap_lock:
                 self._send_json(200, list(_snapshots))
+        elif path == "/claude/status":
+            with _snap_lock:
+                self._send_json(200, dict(_status_snapshot))
         elif path == "/ollama/models":
             self._send_json(200, _ollama.models())
         else:

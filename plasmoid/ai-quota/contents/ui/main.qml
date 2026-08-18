@@ -39,6 +39,7 @@ PlasmoidItem {
 
     // ── State ─────────────────────────────────────────────────────────────────
     property var  providersData: []      // quota snapshots from /providers
+    property var  claudeStatus: ({})     // status.claude.com snapshot
     property var  ollamaModels: []
     property string ollamaPreferred: ""
     property bool ollamaOk: false
@@ -58,11 +59,31 @@ PlasmoidItem {
         return -1
     }
 
+    // Statuspage severity, 0 = all clear. Drives the panel badge and tooltip:
+    // an outage is worth knowing about before you open anything.
+    readonly property int statusSeverity: {
+        if (root.claudeStatus && root.claudeStatus.severity !== undefined)
+            return root.claudeStatus.severity
+        return 0
+    }
+    readonly property string statusSummary: {
+        var st = root.claudeStatus || ({})
+        if (!st.indicator || st.indicator === "unknown") return ""
+        if (st.severity > 0 && st.incidents && st.incidents.length > 0)
+            return st.incidents[0].name
+        return st.description || ""
+    }
+
     preferredRepresentation: compactRepresentation
     toolTipMainText: "AI Quota"
-    toolTipSubText: daemonOk
-        ? (headlineUtil >= 0 ? ("Claude 5h: " + Math.round(headlineUtil) + "%") : "Conectado")
-        : "Daemon offline"
+    toolTipSubText: {
+        if (!daemonOk) return "Daemon offline"
+        var lines = []
+        if (headlineUtil >= 0) lines.push("Claude 5h: " + Math.round(headlineUtil) + "%")
+        // Only when it's news — "All Systems Operational" on every hover is noise.
+        if (statusSeverity > 0 && statusSummary) lines.push("⚠ " + statusSummary)
+        return lines.length > 0 ? lines.join("\n") : "Conectado"
+    }
 
     function utilColor(u) {
         if (u >= 90) return red
@@ -86,15 +107,19 @@ PlasmoidItem {
         }
 
         // Status badge instead of tinting the glyph — carries "you are near the
-        // limit" without turning the icon into the odd one out.
+        // limit" without turning the icon into the odd one out. A Claude outage
+        // lights the same dot: both mean "open this before you wonder why your
+        // request failed", and two badges on one 22px icon is one too many.
         Rectangle {
-            visible: root.daemonOk && root.headlineUtil >= 70
+            visible: root.daemonOk
+                     && (root.headlineUtil >= 70 || root.statusSeverity > 0)
             anchors.right: panelIcon.right
             anchors.top: panelIcon.top
             width: Math.max(4, Math.round(panelIcon.width * 0.26))
             height: width
             radius: width / 2
-            color: root.headlineUtil >= 90 ? root.red : root.amber
+            color: (root.headlineUtil >= 90 || root.statusSeverity >= 2)
+                   ? root.red : root.amber
             border.width: 1
             border.color: Kirigami.Theme.backgroundColor
         }
@@ -376,6 +401,23 @@ PlasmoidItem {
             spacing: Kirigami.Units.largeSpacing
             property var prov: root.providersData[root.activeTab] || ({})
 
+            // Service status. Only under the provider it describes — the tab
+            // is per-provider and status.claude.com says nothing about Ollama.
+            StatusStrip {
+                Layout.fillWidth: true
+                visible: prov.id === "claude" && indicator.length > 0
+                indicator:   root.claudeStatus.indicator || ""
+                description: root.claudeStatus.description || ""
+                components:  root.claudeStatus.components || []
+                incidents:   root.claudeStatus.incidents || []
+                pageUrl:     root.claudeStatus.url || "https://status.claude.com"
+                stale:       root.claudeStatus.ok === false
+                error:       root.claudeStatus.error || ""
+                colText: root.text; colDim: root.textDim; colSand: root.sand
+                colLine: root.line; colSurface: root.surface2
+                colLow: root.teal; colWarn: root.amber; colHigh: root.red
+            }
+
             // Error banner (still show stale numbers below if any)
             Item {
                 Layout.fillWidth: true
@@ -559,7 +601,7 @@ PlasmoidItem {
     Timer {
         interval: root.expanded ? root.pollMs : root.idlePollMs
         running: true; repeat: true; triggeredOnStart: true
-        onTriggered: { fetchProviders(); fetchOllama() }
+        onTriggered: { fetchProviders(); fetchClaudeStatus(); fetchOllama() }
     }
 
     // Keeps the "actualizado hace Xs" label ticking while the popup is open.
@@ -569,7 +611,9 @@ PlasmoidItem {
     }
 
     // Poll immediately when the popup opens instead of waiting out the idle tick.
-    onExpandedChanged: if (expanded) { nowMs = Date.now(); fetchProviders(); fetchOllama() }
+    onExpandedChanged: if (expanded) {
+        nowMs = Date.now(); fetchProviders(); fetchClaudeStatus(); fetchOllama()
+    }
 
     // ── API ──────────────────────────────────────────────────────────────────
     function getJson(path, onOk, onFail) {
@@ -624,6 +668,7 @@ PlasmoidItem {
             root.refreshing = false
             if (!ok) { root.failStreak = 2; root.daemonOk = false }
             fetchProviders()
+            fetchClaudeStatus()
             fetchOllama()
         }, 20000)   // a cold provider call can outlast the default timeout
     }
@@ -643,6 +688,21 @@ PlasmoidItem {
             // Only flip the whole popup to "offline" after two in a row.
             root.failStreak++
             if (root.failStreak >= 2) root.daemonOk = false
+        })
+    }
+
+    function fetchClaudeStatus() {
+        getJson("/claude/status", (data) => {
+            root.claudeStatus = data
+        }, () => {
+            // Keep whatever we last read, just mark it stale: a dropped local
+            // request is no evidence about Anthropic's services either way.
+            var st = Object.assign({}, root.claudeStatus)
+            if (st.indicator) {
+                st.ok = false
+                st.error = st.error || "daemon no responde"
+                root.claudeStatus = st
+            }
         })
     }
 

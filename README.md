@@ -8,7 +8,7 @@ See your AI subscription quotas and manage your local Ollama models from the KDE
 
 ## Features
 
-- **AI neural-network panel icon** in the plain theme color, so it sits in the icon row like every other tray icon — with a small amber/red badge once your 5-hour window crosses 70% / 90%; dimmed when the daemon is offline
+- **AI neural-network panel icon** in the plain theme color, so it sits in the icon row like every other tray icon — with a small amber/red badge once your 5-hour window crosses 70% / 90% **or Claude is having an incident**; dimmed when the daemon is offline
 - **Tabs** separating providers, one per AI plus an Ollama tab, each with a health dot
 - **Claude tab — live quota** (the same numbers `/usage` shows inside Claude Code):
   - The **first window is a hero readout** — the number you opened the widget for, not one row among many
@@ -16,6 +16,10 @@ See your AI subscription quotas and manage your local Ollama models from the KDE
   - "reinicia en Xh Ym" reset hint plus an **"a este ritmo llegas al X%"** projection per window
   - Opus / Sonnet 7-day windows shown when the API reports them
   - Plan (`PRO`) and rate-limit tier as chips
+- **Claude tab — service status** from [status.claude.com](https://status.claude.com), the thing quota numbers can't tell you: whether a failing request is your limit or their outage
+  - One quiet line while everything is up (`● TODO OPERATIVO`); it only grows when something is wrong
+  - Degraded components (Claude Code, API, claude.ai — plus anything else currently unhealthy), in Spanish
+  - Open incidents with their latest update, clickable through to the incident page
 - **Follows your Plasma theme** — the vintage palette ships in a light and a dark variant, picked from `Kirigami.Theme`, and every size derives from `Kirigami.Units` so it scales on HiDPI
 - **Status bar** showing how stale the numbers are (`actualizado hace 6 s`) and whether the daemon is answering
 - **Actualizar forces a real re-query** (`POST /refresh`) instead of re-reading the daemon's cache, and spins while it is in flight
@@ -34,6 +38,7 @@ See your AI subscription quotas and manage your local Ollama models from the KDE
 | Provider | Source | Data |
 |---|---|---|
 | Claude | `~/.claude/.credentials.json` + `api.anthropic.com/api/oauth/usage` | Live 5h / 7d utilization, resets, plan |
+| Claude status | `status.claude.com/api/v2/summary.json` | Overall indicator, per-component state, open incidents |
 | Ollama | `http://127.0.0.1:11434` (`/api/tags`, `/api/ps`, `/api/generate`) | Installed models, resident state, load/unload, preferred |
 
 > Codex and Gemini are not included yet: their per-plan quota has no clean local endpoint. The daemon is built so they can be added later without a rewrite — see [Adding a provider](#adding-a-provider).
@@ -122,6 +127,7 @@ The daemon exposes a local REST API at `http://127.0.0.1:7183`:
 |---|---|---|
 | GET | `/status` | Daemon health + list of active provider ids |
 | GET | `/providers` | Quota snapshot for every provider (windows, meta) |
+| GET | `/claude/status` | status.claude.com: overall indicator, components, open incidents |
 | GET | `/ollama/models` | Installed models + which are resident in memory + preferred |
 | POST | `/ollama/load` | Load a model into memory `{"name": "qwen3:8b"}` (async) |
 | POST | `/ollama/unload` | Evict a model from memory `{"name": "qwen3:8b"}` |
@@ -145,6 +151,29 @@ Example `/providers` response:
 ]
 ```
 
+Example `/claude/status` response:
+
+```json
+{
+  "ok": true,
+  "indicator": "minor",
+  "severity": 1,
+  "description": "Partially Degraded Service",
+  "components": [
+    {"name": "Claude Code", "status": "degraded_performance", "primary": true}
+  ],
+  "incidents": [
+    {
+      "name": "Degraded performance for multiple models",
+      "status": "investigating",
+      "impact": "minor",
+      "url": "https://stspg.io/tcsfmtc03xgm",
+      "body": "We are investigating elevated errors…"
+    }
+  ]
+}
+```
+
 ## How Claude quota works
 
 The daemon reads the Claude Code OAuth token from `~/.claude/.credentials.json` and calls Anthropic's usage endpoint — the same data the `/usage` command shows inside Claude Code:
@@ -157,6 +186,14 @@ The daemon reads the Claude Code OAuth token from `~/.claude/.credentials.json` 
 This is deliberate. An earlier version refreshed the token itself and wrote the rotated pair back. OAuth refresh tokens are single-use, so the daemon and Claude Code raced over the same file and whichever redeemed second was left holding a dead token — a 403 loop that only ended when the other process rewrote the credentials.
 
 **Rate limiting:** the usage endpoint allows roughly 30 requests/hour, so the poll loop runs at 180s. On a 429 or 5xx the provider backs off (120s, doubling to a 900s cap, reset on the first success) and keeps serving the last good numbers rather than flapping to offline. The **Actualizar** button skips the backoff — a human pressing a button is not what causes throttling.
+
+## How the status check works
+
+`status.claude.com` is an Atlassian Statuspage, so it has a public JSON API. One call to `GET /api/v2/summary.json` returns the overall indicator, every component and the unresolved incidents — no credentials, no rate limit worth backing off from, and it is CDN-cached.
+
+It is deliberately a **separate provider** from the quota one: the moment the usage endpoint starts failing is exactly the moment you want to know whether Anthropic is down, so an expired token or a 429 must never take the status readout with it.
+
+`severity` maps Statuspage's indicator to a number (`none` 0, `minor` 1, `major` 2, `critical` 3) so the widget can color and compare it. If the fetch fails we keep the last snapshot but flag it `ok: false` — a failed check is not evidence of an outage, and never renders as one.
 
 ## Ollama model management
 
@@ -212,6 +249,7 @@ journalctl --user -u ai-quota-daemon -f
 
 # Test API
 curl http://127.0.0.1:7183/providers    | python3 -m json.tool
+curl http://127.0.0.1:7183/claude/status | python3 -m json.tool
 curl http://127.0.0.1:7183/ollama/models | python3 -m json.tool
 curl -X POST http://127.0.0.1:7183/ollama/load \
      -H "Content-Type: application/json" -d '{"name":"qwen3:8b"}'
@@ -225,11 +263,13 @@ daemon/
   providers/
     __init__.py                Provider contract docs
     claude_provider.py         Reads ~/.claude token (read-only), live usage, backoff
+    claude_status_provider.py  status.claude.com summary: indicator, components, incidents
     ollama_provider.py         /api/tags, /api/ps, load/unload, preferred
 plasmoid/ai-quota/
   contents/ui/
     main.qml                   Plasmoid root: palette, polling, tabs, panel icon
     QuotaBar.qml               One utilization window — hero or compact row
+    StatusStrip.qml            Claude service status: headline, components, incidents
     Gauge.qml                  Utilization track with the 70 / 90 threshold marks
     ModelRow.qml               One Ollama model row (load/unload/prefer)
   metadata.json                Plasma plugin descriptor
