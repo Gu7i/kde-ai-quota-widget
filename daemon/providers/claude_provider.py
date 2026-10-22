@@ -23,6 +23,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 CREDS_FILE = Path.home() / ".claude" / ".credentials.json"
@@ -90,7 +91,7 @@ class ClaudeProvider:
 
         if not force and time.time() < self._backoff_until:
             # Still throttled — don't spend a request we know will be refused.
-            return self._last or self._err("esperando datos…")
+            return self._cached() or self._err("esperando datos…")
 
         try:
             oauth = self._oauth()
@@ -131,7 +132,7 @@ class ClaudeProvider:
                 self._enter_backoff()
                 print(f"[claude] HTTP {e.code}, pausando {self._backoff}s",
                       flush=True)
-                return self._last or self._err("esperando datos…")
+                return self._cached() or self._err("esperando datos…")
             if e.code in (401, 403):
                 # Our copy of the token is dead. Only Claude Code can rotate it.
                 return self._degrade("token caducado (abre Claude Code)")
@@ -140,6 +141,28 @@ class ClaudeProvider:
             return self._degrade(f"sin conexión ({e.reason})")
         except Exception as e:
             return self._degrade(str(e))
+
+    def _cached(self) -> dict | None:
+        """The last good snapshot, with windows that have since reset zeroed.
+
+        A long throttle can outlive a window: without this the panel kept
+        showing 94% of a 5-hour window that had reset hours earlier.
+        """
+        if not self._last:
+            return None
+        now = time.time()
+        windows = []
+        for w in self._last["windows"]:
+            try:
+                reset = datetime.fromisoformat(w["resets_at"]).timestamp()
+            except (TypeError, ValueError):
+                reset = None
+            if reset is not None and reset <= now:
+                # Usage since the reset is unknown, but 0% is the truthful
+                # floor; the next window only opens on the next request.
+                w = dict(w, utilization=0.0, resets_at=None)
+            windows.append(w)
+        return dict(self._last, windows=windows)
 
     def _degrade(self, msg: str) -> dict:
         """Mark offline but keep the last good numbers visible if we have any."""
